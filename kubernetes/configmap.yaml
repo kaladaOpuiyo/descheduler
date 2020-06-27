@@ -16,6 +16,7 @@ data:
       "LowNodeUtilization":
          enabled: true
          params:
+           useMetrics: true
            nodeResourceUtilizationThresholds:
              thresholds:
                "cpu" : 20
@@ -25,4 +26,3 @@ data:
                "cpu" : 50
                "memory": 50
                "pods": 50
-

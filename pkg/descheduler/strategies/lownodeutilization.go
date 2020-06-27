@@ -80,8 +80,11 @@ func LowNodeUtilization(ctx context.Context, client clientset.Interface, strateg
 		targetThresholds[v1.ResourceMemory] = MaxResourcePercentage
 	}
 
+	var useMetrics bool
+	useMetrics = strategy.Params.UseMetrics
+
 	npm := createNodePodsMap(ctx, client, nodes)
-	lowNodes, targetNodes := classifyNodes(npm, thresholds, targetThresholds)
+	lowNodes, targetNodes := classifyNodes(ctx, npm, thresholds, targetThresholds, useMetrics)
 
 	klog.V(1).Infof("Criteria for a node under utilization: CPU: %v, Mem: %v, Pods: %v",
 		thresholds[v1.ResourceCPU], thresholds[v1.ResourceMemory], thresholds[v1.ResourcePods])
@@ -165,10 +168,10 @@ func validateThresholds(thresholds api.ResourceThresholds) error {
 
 // classifyNodes classifies the nodes into low-utilization or high-utilization nodes. If a node lies between
 // low and high thresholds, it is simply ignored.
-func classifyNodes(npm NodePodsMap, thresholds api.ResourceThresholds, targetThresholds api.ResourceThresholds) ([]NodeUsageMap, []NodeUsageMap) {
+func classifyNodes(ctx context.Context, npm NodePodsMap, thresholds api.ResourceThresholds, targetThresholds api.ResourceThresholds, useMetrics bool) ([]NodeUsageMap, []NodeUsageMap) {
 	lowNodes, targetNodes := []NodeUsageMap{}, []NodeUsageMap{}
 	for node, pods := range npm {
-		usage := nodeUtilization(node, pods)
+		usage := nodeUtilization(ctx, node, pods, useMetrics)
 		nuMap := NodeUsageMap{
 			node:    node,
 			usage:   usage,
@@ -380,20 +383,39 @@ func isNodeWithLowUtilization(nodeThresholds api.ResourceThresholds, thresholds 
 	return true
 }
 
-func nodeUtilization(node *v1.Node, pods []*v1.Pod) api.ResourceThresholds {
-	totalReqs := map[v1.ResourceName]*resource.Quantity{
+func nodeUtilization(ctx context.Context, node *v1.Node, pods []*v1.Pod, useMetrics bool) api.ResourceThresholds {
+
+	totalValues := map[v1.ResourceName]*resource.Quantity{
 		v1.ResourceCPU:    {},
 		v1.ResourceMemory: {},
 	}
+
+	var req v1.ResourceList
+	var metrics v1.ResourceList
+
 	for _, pod := range pods {
-		req, _ := utils.PodRequestsAndLimits(pod)
-		for name, quantity := range req {
-			if name == v1.ResourceCPU || name == v1.ResourceMemory {
-				// As Quantity.Add says: Add adds the provided y quantity to the current value. If the current value is zero,
-				// the format of the quantity will be updated to the format of y.
-				totalReqs[name].Add(quantity)
+
+		switch {
+		case useMetrics:
+			metrics = utils.PodMetrics(ctx, pod)
+			for name, quantity := range metrics {
+				if name == v1.ResourceCPU || name == v1.ResourceMemory {
+					totalValues[name].Add(quantity)
+				}
 			}
+
+		default:
+			req, _ = utils.PodRequestsAndLimits(pod)
+			for name, quantity := range req {
+				if name == v1.ResourceCPU || name == v1.ResourceMemory {
+					// As Quantity.Add says: Add adds the provided y quantity to the current value. If the current value is zero,
+					// the format of the quantity will be updated to the format of y.
+					totalValues[name].Add(quantity)
+				}
+			}
+
 		}
+
 	}
 
 	nodeCapacity := node.Status.Capacity
@@ -403,8 +425,8 @@ func nodeUtilization(node *v1.Node, pods []*v1.Pod) api.ResourceThresholds {
 
 	totalPods := len(pods)
 	return api.ResourceThresholds{
-		v1.ResourceCPU:    api.Percentage((float64(totalReqs[v1.ResourceCPU].MilliValue()) * 100) / float64(nodeCapacity.Cpu().MilliValue())),
-		v1.ResourceMemory: api.Percentage(float64(totalReqs[v1.ResourceMemory].Value()) / float64(nodeCapacity.Memory().Value()) * 100),
+		v1.ResourceCPU:    api.Percentage((float64(totalValues[v1.ResourceCPU].MilliValue()) * 100) / float64(nodeCapacity.Cpu().MilliValue())),
+		v1.ResourceMemory: api.Percentage(float64(totalValues[v1.ResourceMemory].Value()) / float64(nodeCapacity.Memory().Value()) * 100),
 		v1.ResourcePods:   api.Percentage((float64(totalPods) * 100) / float64(nodeCapacity.Pods().Value())),
 	}
 }

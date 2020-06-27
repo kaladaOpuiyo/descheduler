@@ -1,13 +1,16 @@
 package utils
 
 import (
+	"context"
 	"fmt"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	utilfeature "k8s.io/apiserver/pkg/util/feature"
 	"k8s.io/component-base/featuregate"
 	"k8s.io/klog/v2"
+	metricsv "k8s.io/metrics/pkg/client/clientset/versioned"
 )
 
 const (
@@ -153,6 +156,27 @@ func PodRequestsAndLimits(pod *v1.Pod) (reqs, limits v1.ResourceList) {
 	}
 
 	return
+}
+
+// PodMetrics returns a map of all resource utilization summed up for all
+// containers of the pod.
+func PodMetrics(ctx context.Context, pod *v1.Pod) (metrics v1.ResourceList) {
+
+	var mv *metricsv.Clientset
+	metrics = v1.ResourceList{}
+
+	podMetrics, err := mv.MetricsV1beta1().PodMetricses(pod.GetNamespace()).Get(ctx, pod.GetName(), metav1.GetOptions{})
+	if err != nil {
+		klog.Errorf("Could not retrive metrics for %s in namespace %s", pod.Name, pod.Namespace)
+		return
+	}
+
+	for _, container := range podMetrics.Containers {
+		addResourceList(metrics, container.Usage)
+	}
+
+	return
+
 }
 
 // addResourceList adds the resources in newList to list
